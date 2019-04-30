@@ -121,7 +121,7 @@ object DataLoader {
       .save()
 
     //对数据表建立索引
-    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
+//    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
 //    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).
 //      mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION)
 //    .
