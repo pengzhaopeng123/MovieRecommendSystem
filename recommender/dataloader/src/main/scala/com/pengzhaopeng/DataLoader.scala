@@ -12,8 +12,11 @@ import org.elasticsearch.action.admin.indices.create.CreateIndexRequest
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest
 import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest
 import org.elasticsearch.common.settings.Settings
-import org.elasticsearch.common.transport.TransportAddress
+import org.elasticsearch.common.transport.{InetSocketTransportAddress, TransportAddress}
 import org.elasticsearch.transport.client.PreBuiltTransportClient
+import org.elasticsearch.spark.sql._
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SQLContext._
 
 /**
   * 数据加载服务
@@ -108,13 +111,15 @@ object DataLoader {
     val newTag: DataFrame = tagDF.groupBy($"mid").agg(concat_ws("|", collect_set($"tag")).as("tags")).select("mid", "tags")
 
     //需要将处理后的Tag数据 和 Movie数据融合 产生新的 Moive 数据
-    val movieWithTagsDF: DataFrame = movieDF.join(newTag, Seq("mid", "mid"), "left")
+    val movieWithTagsDF: DataFrame = movieDF.join(newTag, Seq("mid"), "left")
+
 
     //声明了一个ES配置的隐式参数
     implicit val esConfig = ESConfig(config("es.httpHosts"), config("es.transportHosts"), config("es.index"), config("es.cluster.name"))
 
     //将新的数据保存到ES中
-    storeDataInES(movieWithTagsDF);
+    movieWithTagsDF.show()
+//    storeDataInES(movieWithTagsDF);
 
     //关闭spark
     spark.stop()
@@ -129,7 +134,7 @@ object DataLoader {
   def storeDataInES(movieWithTagsDF: DataFrame)(implicit esConfig: ESConfig) = {
 
     //新建一个配置 配置集群名称别忘了
-    val settings: Settings = Settings.builder().put("cluster.name", esConfig.clustername).build()
+    val settings: Settings = Settings.builder().put("cluster.name", esConfig.clusterName).build()
 
     //新建一个ES客户端
     val esClient = new PreBuiltTransportClient(settings)
@@ -139,9 +144,14 @@ object DataLoader {
     val REGEX_HOST_PORT = "(.+):(\\d+)".r
     esConfig.transportHosts.split(",").foreach {
       case REGEX_HOST_PORT(host: String, port: String) => {
-        esClient.addTransportAddress(new TransportAddress(InetAddress.getByName(host), port.toInt))
+        esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(host), port.toInt))
       }
     }
+
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.4"), 9300))
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.5"), 9300))
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.6"), 9300))
+
 
     //清除ES中遗留的数据
     if (esClient.admin().indices().exists(new IndicesExistsRequest(esConfig.index)).actionGet().isExists) {
@@ -151,11 +161,13 @@ object DataLoader {
     esClient.admin().indices().create(new CreateIndexRequest(esConfig.index))
 
     //将数据写入到ES中
+
+
     movieWithTagsDF
       .write
       .option("es.nodes", esConfig.httpHosts)
-      .option("es.http.timeout", "200m")
-      .option("es.mapping.id", "mid")
+      .option("es.http.timeout", "100m")
+//      .option("es.mapping.id", "mid")
       .mode("overwrite")
       .format("org.elasticsearch.spark.sql")
       .save(esConfig.index + "/" + ES_MOVE_INDEX)
@@ -229,7 +241,7 @@ case class MongoConfig(listAddress: List[ServerAddress], db: String)
   * @param transportHosts Transport主机列表， 以，分割
   * @param index          需要操作的索引
   */
-case class ESConfig(httpHosts: String, transportHosts: String, index: String, clustername: String)
+case class ESConfig(httpHosts: String, transportHosts: String, index: String, clusterName: String)
 
 /**
   * Movie数据集，数据集字段通过分割
