@@ -1,11 +1,22 @@
 package com.pengzhaopeng
 
+import java.net.InetAddress
+
 import com.mongodb.casbah.Imports.ServerAddress
 import com.mongodb.casbah.MongoClient
 import com.mongodb.casbah.commons.MongoDBObject
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.elasticsearch.action.admin.indices.create.CreateIndexRequest
+import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest
+import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest
+import org.elasticsearch.common.settings.Settings
+import org.elasticsearch.common.transport.{InetSocketTransportAddress, TransportAddress}
+import org.elasticsearch.transport.client.PreBuiltTransportClient
+import org.elasticsearch.spark.sql._
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SQLContext._
 
 /**
   * 数据加载服务
@@ -13,26 +24,37 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 object DataLoader {
 
   //源文件 电影 评分 标签
-  val MOVIE_DATA_PATH = "movies.csv"
-  val RATING_DATA_PATH = "ratings.csv"
-  val TAG_DATA_PATH = "tags.csv"
+  val MOVIE_DATA_PATH = "D:\\IDEAProject\\MovieRecommendSystem\\recommender\\dataloader\\src\\main\\resources\\movies.csv"
+  val RATING_DATA_PATH = "D:\\IDEAProject\\MovieRecommendSystem\\recommender\\dataloader\\src\\main\\resources\\ratings.csv"
+  val TAG_DATA_PATH = "D:\\IDEAProject\\MovieRecommendSystem\\recommender\\dataloader\\src\\main\\resources\\tags.csv"
 
   //collection
   val MONGODB_MOVIE_COLLECTION = "Movie"
   val MONGODB_RATING_COLLECTION = "Rating"
   val MONGODB_TAG_COLLECTION = "Tag"
 
+  val mongoIp1 = "192.168.2.4"
+  val mongoIp2 = "192.168.2.5"
+  val mongoIp3 = "192.168.2.6"
+  val mongoPort = 27200
+
+  //ES index
+  val ES_MOVE_INDEX = "Movie"
+
+
   def main(args: Array[String]): Unit = {
 
     val config = Map(
       "spark.cores" -> "local[*]",
-      "mongo.uri" -> "mongodb://192.168.2.4:27200,192.168.2.5:27200,192.168.2.6:27200",
-      "mongo.db" -> "recommender"
+      "mongo.db" -> "recommender",
+      "es.httpHosts" -> "hadoop01:9200,hadoop02:9200,hadoop03:9200",
+      "es.transportHosts" -> "hadoop01:9300,hadoop02:9300,hadoop03:9300",
+      "es.index" -> "recommender",
+      "es.cluster.name" -> "bigdata"
     )
-    val mongoIp1 = "192.168.2.4"
-    val mongoIp2 = "192.168.2.5"
-    val mongoIp3 = "192.168.2.6"
-    val mongoPort = 27200
+
+    val mongoAddress = "mongodb://192.168.2.4:27200,192.168.2.5:27200,192.168.2.6:27200/" + config("mongo.db")
+
 
     //需要创建一个SparkConf配置
     val sparkConf: SparkConf = new SparkConf()
@@ -43,7 +65,6 @@ object DataLoader {
     val spark: SparkSession = SparkSession
       .builder()
       .config(sparkConf)
-      .config("spark.mongodb.output.uri", "mongodb://192.168.2.4:27200,192.168.2.5:27200,192.168.2.6:27200")
       .getOrCreate()
 
     import spark.implicits._
@@ -73,22 +94,90 @@ object DataLoader {
       Tag(attr(0).toInt, attr(1).toInt, attr(2).trim, attr(3).toInt)
     }).toDF()
 
-    //定义连接mongodb的隐士配置
+    //定义连接mongodb的隐士配置 方便传参
     val addressesList = List(new ServerAddress(mongoIp1, mongoPort), new ServerAddress(mongoIp1, mongoPort), new ServerAddress(mongoIp1, mongoPort))
 
     implicit val mongoConfig = MongoConfig(addressesList, config("mongo.db"))
+
     //将数据保存到MongoDB中
-    storeDataInMongoDB(movieDF, ratingDF, tagDF)
+    //    storeDataInMongoDB(movieDF, ratingDF, tagDF,mongoAddress)
+
+    //将数据存入ES前进行预处理 处理后的形式为 MID, tag1|tag2|tag3
+    /**
+      * MID , Tags
+      * 1     tag1|tag2|tag3|tag4....
+      */
+    import org.apache.spark.sql.functions._
+    val newTag: DataFrame = tagDF.groupBy($"mid").agg(concat_ws("|", collect_set($"tag")).as("tags")).select("mid", "tags")
+
+    //需要将处理后的Tag数据 和 Movie数据融合 产生新的 Moive 数据
+    val movieWithTagsDF: DataFrame = movieDF.join(newTag, Seq("mid"), "left")
+
+
+    //声明了一个ES配置的隐式参数
+    implicit val esConfig = ESConfig(config("es.httpHosts"), config("es.transportHosts"), config("es.index"), config("es.cluster.name"))
 
     //将新的数据保存到ES中
+    movieWithTagsDF.show()
+//    storeDataInES(movieWithTagsDF);
 
     //关闭spark
+    spark.stop()
+  }
+
+  /**
+    * 将数据保存到ES中
+    *
+    * @param movieWithTagsDF
+    * @return
+    */
+  def storeDataInES(movieWithTagsDF: DataFrame)(implicit esConfig: ESConfig) = {
+
+    //新建一个配置 配置集群名称别忘了
+    val settings: Settings = Settings.builder().put("cluster.name", esConfig.clusterName).build()
+
+    //新建一个ES客户端
+    val esClient = new PreBuiltTransportClient(settings)
+
+    //需要将TransportHosts添加到esClient中
+    //正则表达式： 任意字符（一到多个）: 任意数字（一到多个）    hadoop01:9200
+    val REGEX_HOST_PORT = "(.+):(\\d+)".r
+    esConfig.transportHosts.split(",").foreach {
+      case REGEX_HOST_PORT(host: String, port: String) => {
+        esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(host), port.toInt))
+      }
+    }
+
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.4"), 9300))
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.5"), 9300))
+//    esClient.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("192.168.2.6"), 9300))
+
+
+    //清除ES中遗留的数据
+    if (esClient.admin().indices().exists(new IndicesExistsRequest(esConfig.index)).actionGet().isExists) {
+      esClient.admin().indices().delete(new DeleteIndexRequest(esConfig.index))
+    }
+    //创建index(库)
+    esClient.admin().indices().create(new CreateIndexRequest(esConfig.index))
+
+    //将数据写入到ES中
+
+
+    movieWithTagsDF
+      .write
+      .option("es.nodes", esConfig.httpHosts)
+      .option("es.http.timeout", "100m")
+      .option("es.mapping.id", "mid")
+      .mode("overwrite")
+      .format("org.elasticsearch.spark.sql")
+      .save(esConfig.index + "/" + ES_MOVE_INDEX)
+
   }
 
   /**
     * 将数据保存到MongoDB中
     */
-  def storeDataInMongoDB(movieDF: DataFrame, ratingDF: DataFrame, tagDF: DataFrame)(implicit mongoConfig: MongoConfig): Unit = {
+  def storeDataInMongoDB(movieDF: DataFrame, ratingDF: DataFrame, tagDF: DataFrame, mongoAddress: String)(implicit mongoConfig: MongoConfig): Unit = {
 
     //新建一个MongoDB的连接 TODO 生产环境配置成连接池 https://www.cnblogs.com/jycboy/p/10077080.html
     val mongoClient = MongoClient(mongoConfig.listAddress)
@@ -101,6 +190,7 @@ object DataLoader {
     //将当前数据写入到MongoDB
     movieDF
       .write
+      .option("spark.mongodb.output.uri", mongoAddress)
       .option("collection", MONGODB_MOVIE_COLLECTION)
       .mode("overwrite")
       .format("com.mongodb.spark.sql")
@@ -108,6 +198,7 @@ object DataLoader {
 
     ratingDF
       .write
+      .option("spark.mongodb.output.uri", mongoAddress)
       .option("collection", MONGODB_RATING_COLLECTION)
       .mode("overwrite")
       .format("com.mongodb.spark.sql")
@@ -115,18 +206,22 @@ object DataLoader {
 
     tagDF
       .write
+      .option("spark.mongodb.output.uri", mongoAddress)
       .option("collection", MONGODB_TAG_COLLECTION)
       .mode("overwrite")
       .format("com.mongodb.spark.sql")
       .save()
 
     //对数据表建立索引
-//    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
-//    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).
-//      mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION)
-//    .
+    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
+    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).createIndex(MongoDBObject("uid" -> 1))
+    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
+    mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("uid" -> 1))
+    mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
+
 
     //关闭MongoDB的连接
+    mongoClient.close()
   }
 }
 
@@ -138,6 +233,16 @@ object DataLoader {
   * @param db          数据库
   */
 case class MongoConfig(listAddress: List[ServerAddress], db: String)
+
+/**
+  *
+  * ElasticSearch的连接配置
+  *
+  * @param httpHosts      Http的主机列表，以，分割
+  * @param transportHosts Transport主机列表， 以，分割
+  * @param index          需要操作的索引
+  */
+case class ESConfig(httpHosts: String, transportHosts: String, index: String, clusterName: String)
 
 /**
   * Movie数据集，数据集字段通过分割
