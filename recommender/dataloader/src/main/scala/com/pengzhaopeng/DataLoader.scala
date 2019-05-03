@@ -219,6 +219,7 @@ object DataLoader {
     mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("uid" -> 1))
     mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("mid" -> 1))
 
+
     //关闭MongoDB的连接
     mongoClient.close()
   }
