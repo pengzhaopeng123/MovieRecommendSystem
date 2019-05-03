@@ -167,7 +167,7 @@ object DataLoader {
       .write
       .option("es.nodes", esConfig.httpHosts)
       .option("es.http.timeout", "100m")
-//      .option("es.mapping.id", "mid")
+      .option("es.mapping.id", "mid")
       .mode("overwrite")
       .format("org.elasticsearch.spark.sql")
       .save(esConfig.index + "/" + ES_MOVE_INDEX)
