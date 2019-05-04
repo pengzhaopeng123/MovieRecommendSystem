@@ -1,4 +1,4 @@
-package com.pengzhaopeng
+package com.pengzhaopeng.dataloader
 
 import java.net.InetAddress
 
@@ -14,9 +14,7 @@ import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsReques
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.transport.{InetSocketTransportAddress, TransportAddress}
 import org.elasticsearch.transport.client.PreBuiltTransportClient
-import org.elasticsearch.spark.sql._
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.SQLContext._
+
 
 /**
   * 数据加载服务
@@ -28,6 +26,7 @@ object DataLoader {
   val RATING_DATA_PATH = "D:\\IDEAProject\\MovieRecommendSystem\\recommender\\dataloader\\src\\main\\resources\\ratings.csv"
   val TAG_DATA_PATH = "D:\\IDEAProject\\MovieRecommendSystem\\recommender\\dataloader\\src\\main\\resources\\tags.csv"
 
+  //TODO 待封装
   //collection
   val MONGODB_MOVIE_COLLECTION = "Movie"
   val MONGODB_RATING_COLLECTION = "Rating"
