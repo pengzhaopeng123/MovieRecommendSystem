@@ -15,6 +15,7 @@
     <modules>
         <module>dataloader</module>
         <module>OfflineRecommender</module>
+        <module>statisticsRecommender</module>
     </modules>
 
     <properties>
